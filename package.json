@@ -1,0 +1,1 @@
+{"name":"canvas-due-date-audit","version":"1.2.0","private":true,"type":"commonjs","scripts":{"test":"jest"},"devDependencies":{"jest":"^30.5.1"}}
