@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Canvas - Audit Assignment Due Dates
 // @namespace    canvas-due-date-audit
-// @version      1.2
-// @description  Find assignments, quizzes and files with due dates or availability dates before a chosen cutoff date.
+// @version      1.4
+// @description  Find assignments, quizzes and files with due dates or availability dates before a chosen cutoff date, and optionally move the flagged dates when the course starting date shifts.
 // @match        https://canvas.uva.nl/courses/*
 // @grant        none
 // ==/UserScript==
@@ -24,6 +24,22 @@
     const MODAL_ID = 'canvas-due-date-audit-modal';
     const STYLE_ID = 'canvas-due-date-audit-styles';
     const ENDED_STYLE_ID = 'canvas-course-ended-styles';
+
+    const OPTION_ASSIGNMENT_AVAILABLE_ID =
+        'canvas-audit-option-assignment-available';
+    const OPTION_ASSIGNMENT_DUE_ID =
+        'canvas-audit-option-assignment-due';
+    const OPTION_FILE_AVAILABLE_ID =
+        'canvas-audit-option-file-available';
+
+    const MOVE_DATES_BUTTON_ID =
+        'canvas-audit-move-dates';
+    const APPLY_MOVES_BUTTON_ID =
+        'canvas-audit-apply-moves';
+    const CANCEL_MOVES_BUTTON_ID =
+        'canvas-audit-cancel-moves';
+    const RESULT_SELECT_CLASS =
+        'canvas-audit-select';
 
     // ------------------------------------------------------------
     // GET COURSE ID
@@ -187,6 +203,124 @@
         return await fetchAllPages(filesUrl(courseId));
     }
 
+
+    // ------------------------------------------------------------
+    // UPDATE DATES IN CANVAS
+    // ------------------------------------------------------------
+
+    /*
+     * Build the PUT request that moves one flagged date to its
+     * new value. result.update comes from auditEntities and
+     * records which endpoint, entity and field are involved.
+     */
+
+    function dateUpdateRequest(result, courseId, isoDate) {
+
+        const update = result.update;
+
+        const field = update.field;
+
+        if (update.endpoint === 'file') {
+
+            return {
+                url: `/api/v1/courses/${courseId}/files/${update.entityId}`,
+                body: { 'file[unlock_at]': isoDate }
+            };
+        }
+
+        if (update.endpoint === 'quiz') {
+
+            return {
+                url: `/api/v1/courses/${courseId}/quizzes/${update.entityId}`,
+                body: { [`quiz[${field}]`]: isoDate }
+            };
+        }
+
+        if (update.overrideId) {
+
+            return {
+                url:
+                    `/api/v1/courses/${courseId}` +
+                    `/assignments/${update.entityId}` +
+                    `/overrides/${update.overrideId}`,
+                body: { [`assignment_override[${field}]`]: isoDate }
+            };
+        }
+
+        return {
+            url: `/api/v1/courses/${courseId}/assignments/${update.entityId}`,
+            body: { [`assignment[${field}]`]: isoDate }
+        };
+    }
+
+
+    function encodeBody(body) {
+
+        const parts = [];
+
+        for (const key of Object.keys(body)) {
+
+            parts.push(
+                `${encodeURIComponent(key)}=` +
+                `${encodeURIComponent(body[key])}`
+            );
+        }
+
+        return parts.join('&');
+    }
+
+
+    /*
+     * Canvas rejects state-changing requests without the CSRF
+     * token embedded in the page. api.js runs in the page
+     * context, so the meta tag is readable. The vm-based tests
+     * have no document, hence the guard.
+     */
+
+    function csrfToken() {
+
+        if (typeof document === 'undefined') {
+            return null;
+        }
+
+        const meta = document.querySelector(
+            'meta[name="csrf-token"]'
+        );
+
+        return meta ? meta.content : null;
+    }
+
+
+    async function sendDateUpdate(request, fetchImpl) {
+
+        const doFetch = fetchImpl || fetch;
+
+        const headers = {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        };
+
+        const token = csrfToken();
+
+        if (token) {
+            headers['X-CSRF-Token'] = token;
+        }
+
+        const response = await doFetch(request.url, {
+            method: 'PUT',
+            credentials: 'same-origin',
+            headers: headers,
+            body: encodeBody(request.body)
+        });
+
+        if (!response.ok) {
+            throw new Error(
+                `Canvas API error: ${response.status} ${response.statusText}`
+            );
+        }
+
+        return response.json();
+    }
+
     // ------------------------------------------------------------
     // DATE HELPERS
     // ------------------------------------------------------------
@@ -269,6 +403,44 @@
             .replace(/'/g, '&#039;');
     }
 
+
+    function isMonday(date) {
+
+        return (
+            date instanceof Date &&
+            !isNaN(date.getTime()) &&
+            date.getDay() === 1
+        );
+    }
+
+
+    /*
+     * Shift a date by whole weeks while preserving the local
+     * time of day. setDate() performs calendar arithmetic, so
+     * the time of day survives DST transitions.
+     */
+    function addWeeks(date, weeks) {
+
+        const shifted = new Date(date);
+
+        shifted.setDate(shifted.getDate() + weeks * 7);
+
+        return shifted;
+    }
+
+
+    /*
+     * Number of whole weeks between two dates, rounded to the
+     * nearest week so a one-day rounding error in the entered
+     * starting dates does not shift every date by an extra week.
+     */
+    function deltaWeeks(oldDate, newDate) {
+
+        return Math.round(
+            (newDate - oldDate) / (7 * 24 * 60 * 60 * 1000)
+        );
+    }
+
     // ------------------------------------------------------------
     // AUDIT ENTITIES
     // ------------------------------------------------------------
@@ -277,6 +449,35 @@
         { field: 'due_at', label: 'Due date' },
         { field: 'unlock_at', label: 'Available from' }
     ];
+
+
+    /*
+     * Selectable date kinds for the checkboxes in the audit
+     * modal. Quiz dates follow the assignment checkboxes,
+     * because Canvas models quizzes as assignments (graded
+     * quizzes are even de-duplicated against the assignments
+     * endpoint).
+     */
+
+    const AUDIT_OPTIONS = [
+        { key: 'assignmentAvailable', label: 'Assignment available' },
+        { key: 'assignmentDue', label: 'Assignment due' },
+        { key: 'fileAvailable', label: 'File available' }
+    ];
+
+
+    function normalizeAuditOptions(options) {
+
+        const normalized = {};
+
+        for (const option of AUDIT_OPTIONS) {
+
+            normalized[option.key] =
+                !options || options[option.key] !== false;
+        }
+
+        return normalized;
+    }
 
 
     function isQuizBackedAssignment(assignment) {
@@ -393,11 +594,48 @@
     }
 
 
-    function auditEntities(entities, cutoffDate, type, courseId) {
+    /*
+     * Determine which Canvas endpoint manages the dates of an
+     * audited entity.
+     *
+     * Quiz-backed assignments come from the assignments
+     * endpoint (entity.quiz_id links to the underlying quiz);
+     * their dates - including overrides - are updated through
+     * the assignment endpoint. Practice quizzes only exist in
+     * the quizzes endpoint and have no overrides.
+     */
+
+    function updateTarget(entity, type) {
+
+        if (type === 'File') {
+            return { endpoint: 'file', entityId: entity.id };
+        }
+
+        if (type === 'Quiz' && !entity.quiz_id) {
+            return { endpoint: 'quiz', entityId: entity.id };
+        }
+
+        return { endpoint: 'assignment', entityId: entity.id };
+    }
+
+
+    function auditEntities(entities, cutoffDate, type, courseId, kindFields) {
 
         const results = [];
 
+        const kinds = DATE_KINDS.filter(
+            kind =>
+                !kindFields ||
+                kindFields.includes(kind.field)
+        );
+
+        if (kinds.length === 0) {
+            return results;
+        }
+
         for (const entity of entities) {
+
+            const target = updateTarget(entity, type);
 
             /*
              * all_dates contains:
@@ -416,7 +654,7 @@
 
                 const audience = audienceLabel(entry);
 
-                for (const kind of DATE_KINDS) {
+                for (const kind of kinds) {
 
                     const rawDate = entry[kind.field];
 
@@ -444,7 +682,15 @@
 
                         flaggedDate: date,
 
-                        dateRaw: rawDate
+                        dateRaw: rawDate,
+
+                        update: {
+                            endpoint: target.endpoint,
+                            entityId: target.entityId,
+                            overrideId:
+                                entry.assignment_override_id || null,
+                            field: kind.field
+                        }
                     });
                 }
             }
@@ -459,7 +705,9 @@
     }
 
 
-    function auditCourse(assignments, quizzes, files, cutoffDate, courseId) {
+    function auditCourse(assignments, quizzes, files, cutoffDate, courseId, options) {
+
+        const selected = normalizeAuditOptions(options);
 
         const {
             assignmentsToAudit,
@@ -467,27 +715,51 @@
             filesToAudit
         } = partitionCourseItems(assignments, quizzes, files);
 
+        /*
+         * Quizzes follow the assignment checkboxes (see
+         * AUDIT_OPTIONS).
+         */
+
+        const assignmentFields = [];
+
+        if (selected.assignmentDue) {
+            assignmentFields.push('due_at');
+        }
+
+        if (selected.assignmentAvailable) {
+            assignmentFields.push('unlock_at');
+        }
+
+        const fileFields = [];
+
+        if (selected.fileAvailable) {
+            fileFields.push('unlock_at');
+        }
+
         const results = [].concat(
 
             auditEntities(
                 assignmentsToAudit,
                 cutoffDate,
                 'Assignment',
-                courseId
+                courseId,
+                assignmentFields
             ),
 
             auditEntities(
                 quizzesToAudit,
                 cutoffDate,
                 'Quiz',
-                courseId
+                courseId,
+                assignmentFields
             ),
 
             auditEntities(
                 filesToAudit,
                 cutoffDate,
                 'File',
-                courseId
+                courseId,
+                fileFields
             )
 
         ).sort(
@@ -498,9 +770,13 @@
         return {
             results,
             itemCount:
-                assignmentsToAudit.length +
-                quizzesToAudit.length +
-                filesToAudit.length
+                (assignmentFields.length > 0
+                    ? assignmentsToAudit.length +
+                      quizzesToAudit.length
+                    : 0) +
+                (fileFields.length > 0
+                    ? filesToAudit.length
+                    : 0)
         };
     }
 
@@ -781,6 +1057,43 @@
             }
 
 
+            .canvas-audit-checkboxes {
+
+                display: flex;
+
+                gap: 12px;
+
+                align-items: center;
+
+                flex-wrap: wrap;
+
+            }
+
+
+            .canvas-audit-checkbox {
+
+                display: inline-flex;
+
+                align-items: center;
+
+                gap: 5px;
+
+                white-space: nowrap;
+
+                cursor: pointer;
+
+            }
+
+
+            .canvas-audit-checkbox input {
+
+                margin: 0;
+
+                padding: 0;
+
+            }
+
+
             .canvas-audit-controls button {
 
                 padding: 8px 14px;
@@ -839,6 +1152,13 @@
             .canvas-audit-footer {
 
                 padding: 20px;
+
+            }
+
+
+            .canvas-audit-footer button {
+
+                margin-right: 10px;
 
             }
 
@@ -969,6 +1289,49 @@
                         </label>
 
 
+                        <span class="canvas-audit-checkboxes">
+
+                            <label class="canvas-audit-checkbox">
+
+                                <input
+                                    type="checkbox"
+                                    id="${OPTION_ASSIGNMENT_AVAILABLE_ID}"
+                                    checked
+                                >
+
+                                Assignment available
+
+                            </label>
+
+
+                            <label class="canvas-audit-checkbox">
+
+                                <input
+                                    type="checkbox"
+                                    id="${OPTION_ASSIGNMENT_DUE_ID}"
+                                    checked
+                                >
+
+                                Assignment due
+
+                            </label>
+
+
+                            <label class="canvas-audit-checkbox">
+
+                                <input
+                                    type="checkbox"
+                                    id="${OPTION_FILE_AVAILABLE_ID}"
+                                    checked
+                                >
+
+                                File available
+
+                            </label>
+
+                        </span>
+
+
                         <button
                             id="canvas-audit-run"
                         >
@@ -1038,120 +1401,52 @@
             });
 
 
-        // Run audit.
+        // Shared state for the results area.
 
-        modal
-            .querySelector('#canvas-audit-run')
-            .addEventListener('click', async () => {
-
-                const courseId = getCourseId();
-
-
-                if (!courseId) {
-
-                    alert(
-                        'Could not determine the Canvas course ID.'
-                    );
-
-                    return;
-                }
+        const status =
+            modal.querySelector(
+                '#canvas-audit-status'
+            );
 
 
-                /*
-                 * Interpret cutoff as the START of that local date.
-                 *
-                 * Example:
-                 *
-                 * cutoff = 2026-09-01
-                 *
-                 * Anything before
-                 * 1 September 2026 00:00
-                 *
-                 * is flagged.
-                 */
-
-                const cutoffDate =
-                    parseCutoffLocalDate(cutoffInput.value);
+        const resultsDiv =
+            modal.querySelector(
+                '#canvas-audit-results'
+            );
 
 
-                if (!cutoffDate) {
-
-                    alert(
-                        'Please choose a cutoff date.'
-                    );
-
-                    return;
-                }
+        let currentResults = [];
 
 
-                const status =
-                    modal.querySelector(
-                        '#canvas-audit-status'
-                    );
+        // ------------------------------------------------------------
+        // RESULTS RENDERING
+        // ------------------------------------------------------------
+
+        function bindResultButtons(results) {
+
+            document
+                .querySelector(
+                    '#canvas-audit-download'
+                )
+                .addEventListener(
+                    'click',
+                    () => downloadCSV(results)
+                );
+
+            document
+                .querySelector(
+                    '#' + MOVE_DATES_BUTTON_ID
+                )
+                .addEventListener(
+                    'click',
+                    () => startMoveDates(results)
+                );
+        }
 
 
-                const resultsDiv =
-                    modal.querySelector(
-                        '#canvas-audit-results'
-                    );
+        function renderResults(results) {
 
-
-                status.textContent =
-                    'Loading data from Canvas…';
-
-
-                resultsDiv.innerHTML = '';
-
-
-                try {
-
-                    const [
-                        assignments,
-                        quizzes,
-                        files
-                    ] = await Promise.all([
-                        getAssignments(courseId),
-                        getQuizzes(courseId),
-                        getFiles(courseId)
-                    ]);
-
-
-                    const { results, itemCount } = auditCourse(
-                        assignments,
-                        quizzes,
-                        files,
-                        cutoffDate,
-                        courseId
-                    );
-
-
-                    status.textContent =
-                        `Checking ${itemCount} item(s)…`;
-
-
-                    status.textContent =
-                        `Found ${results.length} outdated date(s).`;
-
-
-                    if (results.length === 0) {
-
-                        resultsDiv.innerHTML = `
-
-                            <div class="canvas-audit-footer">
-
-                                🎉 No due dates or "available from"
-                                dates were found before the selected
-                                cutoff date.
-
-                            </div>
-
-                        `;
-
-                        return;
-                    }
-
-
-                    let html = `
+            let html = `
 
                         <table
                             class="canvas-audit-table"
@@ -1160,6 +1455,8 @@
                             <thead>
 
                                 <tr>
+
+                                    <th></th>
 
                                     <th>Type</th>
 
@@ -1180,11 +1477,23 @@
                     `;
 
 
-                    for (const item of results) {
+            let index = 0;
 
-                        html += `
+            for (const item of results) {
+
+                html += `
 
                             <tr>
+
+                                <td>
+
+                                    <input
+                                        type="checkbox"
+                                        class="${RESULT_SELECT_CLASS}"
+                                        data-index="${index}"
+                                    >
+
+                                </td>
 
                                 <td>
 
@@ -1193,7 +1502,6 @@
                                     )}
 
                                 </td>
-
 
                                 <td>
 
@@ -1212,7 +1520,6 @@
 
                                 </td>
 
-
                                 <td
                                     class="canvas-audit-old-date"
                                 >
@@ -1223,7 +1530,6 @@
 
                                 </td>
 
-
                                 <td>
 
                                     ${escapeHtml(
@@ -1231,7 +1537,6 @@
                                     )}
 
                                 </td>
-
 
                                 <td>
 
@@ -1246,19 +1551,28 @@
                             </tr>
 
                         `;
-                    }
+
+                index++;
+            }
 
 
-                    html += `
+            html += `
 
                             </tbody>
 
                         </table>
 
-
                         <div
                             class="canvas-audit-footer"
                         >
+
+                            <button
+                                id="${MOVE_DATES_BUTTON_ID}"
+                            >
+
+                                Move dates
+
+                            </button>
 
                             <button
                                 id="canvas-audit-download"
@@ -1272,30 +1586,516 @@
 
                     `;
 
+            resultsDiv.innerHTML = html;
 
-                    resultsDiv.innerHTML = html;
+            bindResultButtons(results);
+        }
 
 
-                    document
-                        .querySelector(
-                            '#canvas-audit-download'
-                        )
-                        .addEventListener(
-                            'click',
-                            () => downloadCSV(results)
+        // ------------------------------------------------------------
+        // MOVE DATES
+        // ------------------------------------------------------------
+
+        function promptMondayDate(label) {
+
+            while (true) {
+
+                const value = prompt(
+                    label +
+                    ' (YYYY-MM-DD, must be a Monday):'
+                );
+
+                if (value === null) {
+                    return null;
+                }
+
+                const date =
+                    parseCutoffLocalDate(value.trim());
+
+                if (!date) {
+
+                    alert(
+                        'Could not read that date. ' +
+                        'Please use YYYY-MM-DD.'
+                    );
+
+                    continue;
+                }
+
+                if (!isMonday(date)) {
+
+                    alert(
+                        'That date is not a Monday.'
+                    );
+
+                    continue;
+                }
+
+                return date;
+            }
+        }
+
+
+        function startMoveDates(results) {
+
+            const checkboxes =
+                resultsDiv.querySelectorAll(
+                    '.' + RESULT_SELECT_CLASS
+                );
+
+            const selected = [];
+
+            checkboxes.forEach(checkbox => {
+
+                if (checkbox.checked) {
+
+                    selected.push(
+                        results[
+                            Number(
+                                checkbox.dataset.index
+                            )
+                        ]
+                    );
+                }
+            });
+
+            if (selected.length === 0) {
+
+                alert(
+                    'Select at least one result first.'
+                );
+
+                return;
+            }
+
+            const oldStart =
+                promptMondayDate(
+                    'Enter the old starting date of the course'
+                );
+
+            if (!oldStart) {
+                return;
+            }
+
+            const newStart =
+                promptMondayDate(
+                    'Enter the new starting date of the course'
+                );
+
+            if (!newStart) {
+                return;
+            }
+
+            const weeks =
+                deltaWeeks(oldStart, newStart);
+
+            const proposals = selected.map(
+                result => ({
+                    ...result,
+                    newDate: addWeeks(
+                        result.flaggedDate,
+                        weeks
+                    )
+                })
+            );
+
+            renderMoveProposal(proposals, weeks);
+        }
+
+
+        function renderMoveProposal(
+            proposals,
+            weeks
+        ) {
+
+            const previousHtml =
+                resultsDiv.innerHTML;
+
+            status.textContent =
+                `Proposed new dates, shifted by ` +
+                `${weeks} week(s). ` +
+                'Confirm to update them in Canvas.';
+
+            let html = `
+
+                        <table
+                            class="canvas-audit-table"
+                        >
+
+                            <thead>
+
+                                <tr>
+
+                                    <th>Type</th>
+
+                                    <th>Name</th>
+
+                                    <th>Flag</th>
+
+                                    <th>Applies to</th>
+
+                                    <th>Old date</th>
+
+                                    <th>New date</th>
+
+                                </tr>
+
+                            </thead>
+
+                            <tbody>
+
+                    `;
+
+            for (const proposal of proposals) {
+
+                html += `
+
+                            <tr>
+
+                                <td>
+
+                                    ${escapeHtml(
+                                        proposal.itemType
+                                    )}
+
+                                </td>
+
+                                <td>
+
+                                    ${escapeHtml(
+                                        proposal.itemName
+                                    )}
+
+                                </td>
+
+                                <td
+                                    class="canvas-audit-old-date"
+                                >
+
+                                    ${escapeHtml(
+                                        proposal.dateKind
+                                    )}
+
+                                </td>
+
+                                <td>
+
+                                    ${escapeHtml(
+                                        proposal.audience
+                                    )}
+
+                                </td>
+
+                                <td>
+
+                                    ${escapeHtml(
+                                        formatDate(
+                                            proposal.dateRaw
+                                        )
+                                    )}
+
+                                </td>
+
+                                <td>
+
+                                    ${escapeHtml(
+                                        formatDate(
+                                            proposal.newDate
+                                        )
+                                    )}
+
+                                </td>
+
+                            </tr>
+
+                        `;
+            }
+
+
+            html += `
+
+                            </tbody>
+
+                        </table>
+
+                        <div
+                            class="canvas-audit-footer"
+                        >
+
+                            <button
+                                id="${APPLY_MOVES_BUTTON_ID}"
+                            >
+
+                                Confirm: update dates in Canvas
+
+                            </button>
+
+                            <button
+                                id="${CANCEL_MOVES_BUTTON_ID}"
+                            >
+
+                                Cancel
+
+                            </button>
+
+                        </div>
+
+                    `;
+
+            resultsDiv.innerHTML = html;
+
+
+            document
+                .querySelector(
+                    '#' + CANCEL_MOVES_BUTTON_ID
+                )
+                .addEventListener(
+                    'click',
+                    () => {
+
+                        status.textContent = '';
+
+                        resultsDiv.innerHTML =
+                            previousHtml;
+
+                        bindResultButtons(
+                            currentResults
                         );
+                    }
+                );
 
+
+            document
+                .querySelector(
+                    '#' + APPLY_MOVES_BUTTON_ID
+                )
+                .addEventListener(
+                    'click',
+                    () => applyMoves(proposals)
+                );
+        }
+
+
+        async function applyMoves(proposals) {
+
+            const courseId = getCourseId();
+
+            const applyButton =
+                document.querySelector(
+                    '#' + APPLY_MOVES_BUTTON_ID
+                );
+
+            const cancelButton =
+                document.querySelector(
+                    '#' + CANCEL_MOVES_BUTTON_ID
+                );
+
+            applyButton.disabled = true;
+
+            cancelButton.disabled = true;
+
+            applyButton.textContent =
+                'Updating…';
+
+            let movedCount = 0;
+
+            const failures = [];
+
+            for (const proposal of proposals) {
+
+                const request = dateUpdateRequest(
+                    proposal,
+                    courseId,
+                    proposal.newDate.toISOString()
+                );
+
+                try {
+
+                    await sendDateUpdate(request);
+
+                    movedCount++;
 
                 } catch (error) {
 
                     console.error(error);
 
+                    failures.push(
+                        `${proposal.itemName} ` +
+                        `(${proposal.dateKind}): ` +
+                        `${error.message}`
+                    );
+                }
+            }
 
-                    status.textContent =
-                        'Error while loading data from Canvas.';
+            if (failures.length > 0) {
 
+                alert(
+                    `Moved ${movedCount} of ` +
+                    `${proposals.length} date(s).` +
+                    `\n\nFailed:\n` +
+                    failures.join('\n')
+                );
+            }
+
+            /*
+             * Refresh the audit so moved dates
+             * disappear from the results.
+             */
+
+            await runAudit();
+        }
+
+
+        // ------------------------------------------------------------
+        // RUN AUDIT
+        // ------------------------------------------------------------
+
+        async function runAudit() {
+
+            const courseId = getCourseId();
+
+
+            if (!courseId) {
+
+                alert(
+                    'Could not determine the Canvas course ID.'
+                );
+
+                return;
+            }
+
+
+            /*
+             * Interpret cutoff as the START of that local date.
+             *
+             * Example:
+             *
+             * cutoff = 2026-09-01
+             *
+             * Anything before
+             * 1 September 2026 00:00
+             *
+             * is flagged.
+             */
+
+            const cutoffDate =
+                parseCutoffLocalDate(cutoffInput.value);
+
+
+            if (!cutoffDate) {
+
+                alert(
+                    'Please choose a cutoff date.'
+                );
+
+                return;
+            }
+
+
+            const options = {
+                assignmentAvailable:
+                    modal.querySelector(
+                        '#' + OPTION_ASSIGNMENT_AVAILABLE_ID
+                    ).checked,
+
+                assignmentDue:
+                    modal.querySelector(
+                        '#' + OPTION_ASSIGNMENT_DUE_ID
+                    ).checked,
+
+                fileAvailable:
+                    modal.querySelector(
+                        '#' + OPTION_FILE_AVAILABLE_ID
+                    ).checked
+            };
+
+
+            if (
+                !options.assignmentAvailable &&
+                !options.assignmentDue &&
+                !options.fileAvailable
+            ) {
+
+                alert(
+                    'Select at least one date type to audit.'
+                );
+
+                return;
+            }
+
+
+            status.textContent =
+                'Loading data from Canvas…';
+
+
+            resultsDiv.innerHTML = '';
+
+
+            try {
+
+                const [
+                    assignments,
+                    quizzes,
+                    files
+                ] = await Promise.all([
+                    getAssignments(courseId),
+                    getQuizzes(courseId),
+                    getFiles(courseId)
+                ]);
+
+
+                const { results, itemCount } = auditCourse(
+                    assignments,
+                    quizzes,
+                    files,
+                    cutoffDate,
+                    courseId,
+                    options
+                );
+
+
+                currentResults = results;
+
+
+                status.textContent =
+                    `Checking ${itemCount} item(s)…`;
+
+
+                status.textContent =
+                    `Found ${results.length} outdated date(s).`;
+
+
+                if (results.length === 0) {
 
                     resultsDiv.innerHTML = `
+
+                        <div class="canvas-audit-footer">
+
+                            🎉 No due dates or "available from"
+                            dates were found before the selected
+                            cutoff date.
+
+                        </div>
+
+                    `;
+
+                    return;
+                }
+
+
+                renderResults(results);
+
+
+            } catch (error) {
+
+                console.error(error);
+
+
+                status.textContent =
+                    'Error while loading data from Canvas.';
+
+
+                resultsDiv.innerHTML = `
 
                         <div
                             class="canvas-audit-footer"
@@ -1308,9 +2108,13 @@
                         </div>
 
                     `;
-                }
+            }
+        }
 
-            });
+
+        modal
+            .querySelector('#canvas-audit-run')
+            .addEventListener('click', runAudit);
 
 
         return modal;

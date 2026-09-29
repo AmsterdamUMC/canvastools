@@ -8,7 +8,10 @@ const {
     getCourse,
     assignmentsUrl,
     quizzesUrl,
-    filesUrl
+    filesUrl,
+    dateUpdateRequest,
+    encodeBody,
+    sendDateUpdate
 } = loadModule('../src/api.js', {
     exports: [
         'parseCourseId',
@@ -18,7 +21,10 @@ const {
         'getCourse',
         'assignmentsUrl',
         'quizzesUrl',
-        'filesUrl'
+        'filesUrl',
+        'dateUpdateRequest',
+        'encodeBody',
+        'sendDateUpdate'
     ]
 });
 
@@ -155,6 +161,107 @@ describe('api.js', () => {
             await expect(fetchAllPages('/page/1', fetchImpl)).rejects.toThrow(
                 'Canvas API error: 403 Forbidden'
             );
+        });
+    });
+
+    describe('dateUpdateRequest', () => {
+        test('builds an assignment request for base dates', () => {
+            const result = {
+                update: { endpoint: 'assignment', entityId: 7, overrideId: null, field: 'due_at' }
+            };
+
+            expect(dateUpdateRequest(result, '99', '2026-10-12T08:00:00.000Z')).toEqual({
+                url: '/api/v1/courses/99/assignments/7',
+                body: { 'assignment[due_at]': '2026-10-12T08:00:00.000Z' }
+            });
+        });
+
+        test('builds an override request for differentiated dates', () => {
+            const result = {
+                update: { endpoint: 'assignment', entityId: 8, overrideId: 55, field: 'unlock_at' }
+            };
+
+            expect(dateUpdateRequest(result, '99', '2026-10-12T08:00:00.000Z')).toEqual({
+                url: '/api/v1/courses/99/assignments/8/overrides/55',
+                body: { 'assignment_override[unlock_at]': '2026-10-12T08:00:00.000Z' }
+            });
+        });
+
+        test('builds a quiz request for practice quizzes', () => {
+            const result = {
+                update: { endpoint: 'quiz', entityId: 21, overrideId: null, field: 'due_at' }
+            };
+
+            expect(dateUpdateRequest(result, '99', '2026-10-12T08:00:00.000Z')).toEqual({
+                url: '/api/v1/courses/99/quizzes/21',
+                body: { 'quiz[due_at]': '2026-10-12T08:00:00.000Z' }
+            });
+        });
+
+        test('builds a file request on unlock_at', () => {
+            const result = {
+                update: { endpoint: 'file', entityId: 30, overrideId: null, field: 'unlock_at' }
+            };
+
+            expect(dateUpdateRequest(result, '99', '2026-10-12T08:00:00.000Z')).toEqual({
+                url: '/api/v1/courses/99/files/30',
+                body: { 'file[unlock_at]': '2026-10-12T08:00:00.000Z' }
+            });
+        });
+    });
+
+    describe('encodeBody', () => {
+        test('URL-encodes the flat form fields', () => {
+            expect(encodeBody({ 'assignment[due_at]': '2026-10-12T08:00:00.000Z' })).toBe(
+                'assignment%5Bdue_at%5D=2026-10-12T08%3A00%3A00.000Z'
+            );
+        });
+    });
+
+    describe('sendDateUpdate', () => {
+        function jsonResponse(body, options = {}) {
+            return {
+                ok: options.ok !== false,
+                status: options.status || 200,
+                statusText: options.statusText || 'OK',
+                json: async () => body
+            };
+        }
+
+        test('sends a PUT with encoded body and same-origin credentials', async () => {
+            const fetchImpl = jest.fn(async () => jsonResponse({ id: 7 }));
+
+            const request = {
+                url: '/api/v1/courses/99/assignments/7',
+                body: { 'assignment[due_at]': '2026-10-12T08:00:00.000Z' }
+            };
+
+            const response = await sendDateUpdate(request, fetchImpl);
+
+            await expect(Promise.resolve(response)).resolves.toEqual({ id: 7 });
+            expect(fetchImpl).toHaveBeenCalledWith(
+                '/api/v1/courses/99/assignments/7',
+                {
+                    method: 'PUT',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    },
+                    body: 'assignment%5Bdue_at%5D=2026-10-12T08%3A00%3A00.000Z'
+                }
+            );
+        });
+
+        test('throws on a non-OK response', async () => {
+            const fetchImpl = jest.fn(async () => jsonResponse({}, {
+                ok: false,
+                status: 401,
+                statusText: 'Unauthorized'
+            }));
+
+            await expect(
+                sendDateUpdate({ url: '/x', body: {} }, fetchImpl)
+            ).rejects.toThrow('Canvas API error: 401 Unauthorized');
         });
     });
 });

@@ -8,6 +8,35 @@
     ];
 
 
+    /*
+     * Selectable date kinds for the checkboxes in the audit
+     * modal. Quiz dates follow the assignment checkboxes,
+     * because Canvas models quizzes as assignments (graded
+     * quizzes are even de-duplicated against the assignments
+     * endpoint).
+     */
+
+    const AUDIT_OPTIONS = [
+        { key: 'assignmentAvailable', label: 'Assignment available' },
+        { key: 'assignmentDue', label: 'Assignment due' },
+        { key: 'fileAvailable', label: 'File available' }
+    ];
+
+
+    function normalizeAuditOptions(options) {
+
+        const normalized = {};
+
+        for (const option of AUDIT_OPTIONS) {
+
+            normalized[option.key] =
+                !options || options[option.key] !== false;
+        }
+
+        return normalized;
+    }
+
+
     function isQuizBackedAssignment(assignment) {
 
         return (
@@ -122,11 +151,48 @@
     }
 
 
-    function auditEntities(entities, cutoffDate, type, courseId) {
+    /*
+     * Determine which Canvas endpoint manages the dates of an
+     * audited entity.
+     *
+     * Quiz-backed assignments come from the assignments
+     * endpoint (entity.quiz_id links to the underlying quiz);
+     * their dates - including overrides - are updated through
+     * the assignment endpoint. Practice quizzes only exist in
+     * the quizzes endpoint and have no overrides.
+     */
+
+    function updateTarget(entity, type) {
+
+        if (type === 'File') {
+            return { endpoint: 'file', entityId: entity.id };
+        }
+
+        if (type === 'Quiz' && !entity.quiz_id) {
+            return { endpoint: 'quiz', entityId: entity.id };
+        }
+
+        return { endpoint: 'assignment', entityId: entity.id };
+    }
+
+
+    function auditEntities(entities, cutoffDate, type, courseId, kindFields) {
 
         const results = [];
 
+        const kinds = DATE_KINDS.filter(
+            kind =>
+                !kindFields ||
+                kindFields.includes(kind.field)
+        );
+
+        if (kinds.length === 0) {
+            return results;
+        }
+
         for (const entity of entities) {
+
+            const target = updateTarget(entity, type);
 
             /*
              * all_dates contains:
@@ -145,7 +211,7 @@
 
                 const audience = audienceLabel(entry);
 
-                for (const kind of DATE_KINDS) {
+                for (const kind of kinds) {
 
                     const rawDate = entry[kind.field];
 
@@ -173,7 +239,15 @@
 
                         flaggedDate: date,
 
-                        dateRaw: rawDate
+                        dateRaw: rawDate,
+
+                        update: {
+                            endpoint: target.endpoint,
+                            entityId: target.entityId,
+                            overrideId:
+                                entry.assignment_override_id || null,
+                            field: kind.field
+                        }
                     });
                 }
             }
@@ -188,7 +262,9 @@
     }
 
 
-    function auditCourse(assignments, quizzes, files, cutoffDate, courseId) {
+    function auditCourse(assignments, quizzes, files, cutoffDate, courseId, options) {
+
+        const selected = normalizeAuditOptions(options);
 
         const {
             assignmentsToAudit,
@@ -196,27 +272,51 @@
             filesToAudit
         } = partitionCourseItems(assignments, quizzes, files);
 
+        /*
+         * Quizzes follow the assignment checkboxes (see
+         * AUDIT_OPTIONS).
+         */
+
+        const assignmentFields = [];
+
+        if (selected.assignmentDue) {
+            assignmentFields.push('due_at');
+        }
+
+        if (selected.assignmentAvailable) {
+            assignmentFields.push('unlock_at');
+        }
+
+        const fileFields = [];
+
+        if (selected.fileAvailable) {
+            fileFields.push('unlock_at');
+        }
+
         const results = [].concat(
 
             auditEntities(
                 assignmentsToAudit,
                 cutoffDate,
                 'Assignment',
-                courseId
+                courseId,
+                assignmentFields
             ),
 
             auditEntities(
                 quizzesToAudit,
                 cutoffDate,
                 'Quiz',
-                courseId
+                courseId,
+                assignmentFields
             ),
 
             auditEntities(
                 filesToAudit,
                 cutoffDate,
                 'File',
-                courseId
+                courseId,
+                fileFields
             )
 
         ).sort(
@@ -227,9 +327,13 @@
         return {
             results,
             itemCount:
-                assignmentsToAudit.length +
-                quizzesToAudit.length +
-                filesToAudit.length
+                (assignmentFields.length > 0
+                    ? assignmentsToAudit.length +
+                      quizzesToAudit.length
+                    : 0) +
+                (fileFields.length > 0
+                    ? filesToAudit.length
+                    : 0)
         };
     }
 

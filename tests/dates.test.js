@@ -1,8 +1,24 @@
 const { loadModule } = require('./helpers/loaders');
 
 describe('dates.js', () => {
-    const { parseCanvasDate, parseCutoffLocalDate, formatDate, escapeHtml } = loadModule('../src/dates.js', {
-        exports: ['parseCanvasDate', 'parseCutoffLocalDate', 'formatDate', 'escapeHtml']
+    const {
+        parseCanvasDate,
+        parseCutoffLocalDate,
+        formatDate,
+        escapeHtml,
+        isMonday,
+        addWeeks,
+        deltaWeeks
+    } = loadModule('../src/dates.js', {
+        exports: [
+            'parseCanvasDate',
+            'parseCutoffLocalDate',
+            'formatDate',
+            'escapeHtml',
+            'isMonday',
+            'addWeeks',
+            'deltaWeeks'
+        ]
     });
 
     describe('parseCanvasDate', () => {
@@ -79,6 +95,72 @@ describe('dates.js', () => {
 
         test('leaves safe text unchanged', () => {
             expect(escapeHtml('Hello World')).toBe('Hello World');
+        });
+    });
+
+    describe('isMonday', () => {
+        // 2026-09-28 is a Monday, 2026-09-29 is a Tuesday.
+        test('returns true for a Monday', () => {
+            expect(isMonday(parseCutoffLocalDate('2026-09-28'))).toBe(true);
+        });
+
+        test('returns false for other weekdays', () => {
+            expect(isMonday(parseCutoffLocalDate('2026-09-29'))).toBe(false);
+            expect(isMonday(parseCutoffLocalDate('2026-10-04'))).toBe(false);
+        });
+
+        test('returns false for null / invalid input', () => {
+            expect(isMonday(null)).toBe(false);
+            expect(isMonday(new Date('not-a-date'))).toBe(false);
+        });
+    });
+
+    describe('addWeeks', () => {
+        test('shifts a date by whole weeks', () => {
+            const result = addWeeks(parseCutoffLocalDate('2026-08-03'), 2);
+            expect(result.getFullYear()).toBe(2026);
+            expect(result.getMonth()).toBe(7);
+            expect(result.getDate()).toBe(17);
+        });
+
+        test('keeps the time of day', () => {
+            const source = new Date(2026, 7, 3, 14, 45);
+            const result = addWeeks(source, 1);
+            expect(result.getHours()).toBe(14);
+            expect(result.getMinutes()).toBe(45);
+        });
+
+        test('supports negative week counts', () => {
+            const result = addWeeks(parseCutoffLocalDate('2026-09-28'), -3);
+            expect(result.getFullYear()).toBe(2026);
+            expect(result.getMonth()).toBe(8);
+            expect(result.getDate()).toBe(7);
+        });
+
+        test('does not modify the original date', () => {
+            const source = parseCutoffLocalDate('2026-08-03');
+            addWeeks(source, 5);
+            expect(source.getDate()).toBe(3);
+        });
+    });
+
+    describe('deltaWeeks', () => {
+        test('counts whole weeks between two dates', () => {
+            const oldStart = parseCutoffLocalDate('2026-08-31');
+            const newStart = parseCutoffLocalDate('2026-09-28');
+            expect(deltaWeeks(oldStart, newStart)).toBe(4);
+        });
+
+        test('is negative when the new start is earlier', () => {
+            const oldStart = parseCutoffLocalDate('2026-09-28');
+            const newStart = parseCutoffLocalDate('2026-08-31');
+            expect(deltaWeeks(oldStart, newStart)).toBe(-4);
+        });
+
+        test('rounds to the nearest week', () => {
+            const oldStart = parseCutoffLocalDate('2026-08-31');
+            const newStart = parseCutoffLocalDate('2026-09-10');
+            expect(deltaWeeks(oldStart, newStart)).toBe(1);
         });
     });
 });

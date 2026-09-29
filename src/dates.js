@@ -80,3 +80,41 @@
             .replace(/'/g, '&#039;');
     }
 
+
+    function isMonday(date) {
+
+        return (
+            date instanceof Date &&
+            !isNaN(date.getTime()) &&
+            date.getDay() === 1
+        );
+    }
+
+
+    /*
+     * Shift a date by whole weeks while preserving the local
+     * time of day. setDate() performs calendar arithmetic, so
+     * the time of day survives DST transitions.
+     */
+    function addWeeks(date, weeks) {
+
+        const shifted = new Date(date);
+
+        shifted.setDate(shifted.getDate() + weeks * 7);
+
+        return shifted;
+    }
+
+
+    /*
+     * Number of whole weeks between two dates, rounded to the
+     * nearest week so a one-day rounding error in the entered
+     * starting dates does not shift every date by an extra week.
+     */
+    function deltaWeeks(oldDate, newDate) {
+
+        return Math.round(
+            (newDate - oldDate) / (7 * 24 * 60 * 60 * 1000)
+        );
+    }
+

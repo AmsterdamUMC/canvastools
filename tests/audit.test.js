@@ -8,7 +8,9 @@ const {
     entityUrl,
     dateEntries,
     audienceLabel,
-    partitionCourseItems
+    partitionCourseItems,
+    AUDIT_OPTIONS,
+    normalizeAuditOptions
 } = loadModule('../src/audit.js', {
     deps: ['../src/dates.js'],
     exports: [
@@ -19,13 +21,58 @@ const {
         'entityUrl',
         'dateEntries',
         'audienceLabel',
-        'partitionCourseItems'
+        'partitionCourseItems',
+        'AUDIT_OPTIONS',
+        'normalizeAuditOptions'
     ]
 });
 
 const FIXED_COURSE_ID = '12345';
 
 describe('audit.js', () => {
+    describe('AUDIT_OPTIONS', () => {
+        test('exposes the three selectable date kinds', () => {
+            expect(AUDIT_OPTIONS).toEqual([
+                { key: 'assignmentAvailable', label: 'Assignment available' },
+                { key: 'assignmentDue', label: 'Assignment due' },
+                { key: 'fileAvailable', label: 'File available' }
+            ]);
+        });
+    });
+
+    describe('normalizeAuditOptions', () => {
+        test('defaults every option to true when options are missing', () => {
+            expect(normalizeAuditOptions(undefined)).toEqual({
+                assignmentAvailable: true,
+                assignmentDue: true,
+                fileAvailable: true
+            });
+            expect(normalizeAuditOptions({})).toEqual({
+                assignmentAvailable: true,
+                assignmentDue: true,
+                fileAvailable: true
+            });
+        });
+
+        test('keeps explicit false values and defaults the rest', () => {
+            expect(normalizeAuditOptions({ assignmentDue: false })).toEqual({
+                assignmentAvailable: true,
+                assignmentDue: false,
+                fileAvailable: true
+            });
+
+            expect(normalizeAuditOptions({
+                assignmentAvailable: false,
+                assignmentDue: false,
+                fileAvailable: false
+            })).toEqual({
+                assignmentAvailable: false,
+                assignmentDue: false,
+                fileAvailable: false
+            });
+        });
+    });
+
     describe('isQuizBackedAssignment', () => {
         test('returns true for online_quiz submissions', () => {
             expect(isQuizBackedAssignment({ submission_types: ['online_quiz'] })).toBe(true);
@@ -163,6 +210,20 @@ describe('audit.js', () => {
             expect(results.map(r => r.dateKind).sort()).toEqual(['Available from', 'Due date']);
         });
 
+        test('flags only the requested date kinds when kindFields is given', () => {
+            const entities = [
+                { name: 'Mixed', due_at: '2026-08-01T00:00:00Z', unlock_at: '2026-08-15T00:00:00Z', all_dates: [] }
+            ];
+
+            const dueOnly = auditEntities(entities, makeCutoff('2026-09-01'), 'Assignment', FIXED_COURSE_ID, ['due_at']);
+            expect(dueOnly.map(r => r.dateKind)).toEqual(['Due date']);
+
+            const availableOnly = auditEntities(entities, makeCutoff('2026-09-01'), 'Assignment', FIXED_COURSE_ID, ['unlock_at']);
+            expect(availableOnly.map(r => r.dateKind)).toEqual(['Available from']);
+
+            expect(auditEntities(entities, makeCutoff('2026-09-01'), 'Assignment', FIXED_COURSE_ID, [])).toEqual([]);
+        });
+
         test('uses all_dates when present', () => {
             const entities = [
                 {
@@ -210,6 +271,94 @@ describe('audit.js', () => {
 
             expect(auditEntities(entities, makeCutoff('2026-09-01'), 'Assignment', FIXED_COURSE_ID)).toEqual([]);
         });
+
+        test('attaches update metadata for assignment base dates', () => {
+            const entities = [
+                { id: 7, name: 'Plain', due_at: '2026-08-01T00:00:00Z', unlock_at: null, all_dates: [] }
+            ];
+
+            const results = auditEntities(entities, makeCutoff('2026-09-01'), 'Assignment', FIXED_COURSE_ID);
+
+            expect(results[0].update).toEqual({
+                endpoint: 'assignment',
+                entityId: 7,
+                overrideId: null,
+                field: 'due_at'
+            });
+        });
+
+        test('attaches the override id for differentiated dates', () => {
+            const entities = [
+                {
+                    id: 8,
+                    name: 'Differentiated',
+                    all_dates: [
+                        {
+                            assignment_override_id: 55,
+                            title: 'Section A',
+                            due_at: '2026-08-01T00:00:00Z',
+                            unlock_at: null
+                        }
+                    ]
+                }
+            ];
+
+            const results = auditEntities(entities, makeCutoff('2026-09-01'), 'Assignment', FIXED_COURSE_ID);
+
+            expect(results[0].update.overrideId).toBe(55);
+        });
+
+        test('updates quiz-backed assignments via the assignment endpoint', () => {
+            const entities = [
+                {
+                    id: 9,
+                    quiz_id: 90,
+                    name: 'Graded quiz',
+                    due_at: '2026-08-01T00:00:00Z',
+                    unlock_at: null,
+                    all_dates: []
+                }
+            ];
+
+            const results = auditEntities(entities, makeCutoff('2026-09-01'), 'Quiz', FIXED_COURSE_ID);
+
+            expect(results[0].update).toEqual({
+                endpoint: 'assignment',
+                entityId: 9,
+                overrideId: null,
+                field: 'due_at'
+            });
+        });
+
+        test('updates practice quizzes via the quiz endpoint', () => {
+            const entities = [
+                { id: 21, title: 'Practice quiz', due_at: '2026-08-01T00:00:00Z', unlock_at: null }
+            ];
+
+            const results = auditEntities(entities, makeCutoff('2026-09-01'), 'Quiz', FIXED_COURSE_ID);
+
+            expect(results[0].update).toEqual({
+                endpoint: 'quiz',
+                entityId: 21,
+                overrideId: null,
+                field: 'due_at'
+            });
+        });
+
+        test('updates files via the file endpoint on unlock_at', () => {
+            const entities = [
+                { id: 30, display_name: 'Old.pdf', unlock_at: '2026-07-01T00:00:00Z' }
+            ];
+
+            const results = auditEntities(entities, makeCutoff('2026-09-01'), 'File', FIXED_COURSE_ID);
+
+            expect(results[0].update).toEqual({
+                endpoint: 'file',
+                entityId: 30,
+                overrideId: null,
+                field: 'unlock_at'
+            });
+        });
     });
 
     describe('auditCourse', () => {
@@ -249,6 +398,71 @@ describe('audit.js', () => {
                 'Quiz',
                 'Assignment'
             ]);
+        });
+
+        test('audits only the selected date kinds', () => {
+            const assignments = [
+                { id: 1, name: 'Essay', submission_types: ['online_upload'], due_at: '2026-08-20T00:00:00Z', unlock_at: '2026-08-01T00:00:00Z' }
+            ];
+            const quizzes = [];
+            const files = [
+                { id: 30, display_name: 'Old.pdf', unlock_at: '2026-07-01T00:00:00Z' }
+            ];
+
+            const onlyFiles = auditCourse(
+                assignments,
+                quizzes,
+                files,
+                makeCutoff('2026-09-01'),
+                FIXED_COURSE_ID,
+                { assignmentDue: false, assignmentAvailable: false, fileAvailable: true }
+            );
+            expect(onlyFiles.results.map(r => r.itemName)).toEqual(['Old.pdf']);
+            expect(onlyFiles.itemCount).toBe(1);
+
+            const onlyAssignmentDue = auditCourse(
+                assignments,
+                quizzes,
+                files,
+                makeCutoff('2026-09-01'),
+                FIXED_COURSE_ID,
+                { assignmentDue: true, assignmentAvailable: false, fileAvailable: false }
+            );
+            expect(onlyAssignmentDue.results.map(r => [r.itemName, r.dateKind])).toEqual([
+                ['Essay', 'Due date']
+            ]);
+            expect(onlyAssignmentDue.itemCount).toBe(1);
+
+            const nothingSelected = auditCourse(
+                assignments,
+                quizzes,
+                files,
+                makeCutoff('2026-09-01'),
+                FIXED_COURSE_ID,
+                { assignmentDue: false, assignmentAvailable: false, fileAvailable: false }
+            );
+            expect(nothingSelected.results).toEqual([]);
+            expect(nothingSelected.itemCount).toBe(0);
+        });
+
+        test('applies the assignment checkboxes to quizzes as well', () => {
+            const quizzes = [
+                { id: 21, title: 'Practice quiz', due_at: '2026-08-15T00:00:00Z', unlock_at: '2026-08-10T00:00:00Z' }
+            ];
+
+            const availableOnly = auditCourse(
+                [],
+                quizzes,
+                [],
+                makeCutoff('2026-09-01'),
+                FIXED_COURSE_ID,
+                { assignmentDue: false, assignmentAvailable: true, fileAvailable: false }
+            );
+
+            expect(availableOnly.results.map(r => [r.itemName, r.dateKind])).toEqual([
+                ['Practice quiz', 'Available from']
+            ]);
+            expect(availableOnly.itemCount).toBe(1);
         });
     });
 });
