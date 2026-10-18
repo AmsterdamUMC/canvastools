@@ -930,12 +930,12 @@
                 )
                 .addEventListener(
                     'click',
-                    () => applyMoves(proposals)
+                    () => applyMoves(proposals, weeks)
                 );
         }
 
 
-        async function applyMoves(proposals) {
+        async function applyMoves(proposals, weeks) {
 
             const courseId = getCourseId();
 
@@ -960,27 +960,46 @@
 
             const failures = [];
 
+            /*
+             * One request per Canvas item: each request
+             * already shifts all dates of that entry, so a
+             * second selected date of the same entry must not
+             * shift it again.
+             */
+            const requests = new Map();
+
             for (const proposal of proposals) {
 
-                const request = dateUpdateRequest(
+                const request = moveRequest(
                     proposal,
                     courseId,
-                    proposal.newDate.toISOString()
+                    weeks
                 );
+
+                if (!requests.has(request.url)) {
+                    requests.set(request.url, {
+                        request,
+                        proposals: []
+                    });
+                }
+
+                requests.get(request.url).proposals.push(proposal);
+            }
+
+            for (const { request, proposals: group } of requests.values()) {
 
                 try {
 
                     await sendDateUpdate(request);
 
-                    movedCount++;
+                    movedCount += group.length;
 
                 } catch (error) {
 
                     console.error(error);
 
                     failures.push(
-                        `${proposal.itemName} ` +
-                        `(${proposal.dateKind}): ` +
+                        `${group[0].itemName}: ` +
                         `${error.message}`
                     );
                 }

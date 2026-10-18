@@ -24,8 +24,83 @@ const {
         'filesUrl',
         'dateUpdateRequest',
         'encodeBody',
-        'sendDateUpdate'
+        'sendDateUpdate',
+        'csrfTokenFromCookie'
     ]
+});
+
+const { csrfTokenFromCookie } = loadModule('../src/api.js', {
+    exports: ['csrfTokenFromCookie']
+});
+
+const { moveRequest } = loadModule('../src/api.js', {
+    deps: ['../src/dates.js'],
+    exports: ['moveRequest']
+});
+
+describe('moveRequest', () => {
+    const base = {
+        update: { endpoint: 'assignment', entityId: 7, overrideId: null, field: 'unlock_at' },
+        flaggedDate: new Date('2025-10-27T14:00:00Z'),
+        entryDates: {
+            unlock_at: '2025-10-27T14:00:00Z',
+            due_at: '2025-10-27T16:00:00Z',
+            lock_at: null
+        }
+    };
+
+    test('shifts the other dates of the entry along', () => {
+        const request = moveRequest(base, '99', 52);
+
+        expect(request.url).toBe('/api/v1/courses/99/assignments/7');
+        expect(Object.keys(request.body).sort()).toEqual([
+            'assignment[due_at]',
+            'assignment[unlock_at]'
+        ]);
+
+        const unlock = new Date(request.body['assignment[unlock_at]']);
+        const due = new Date(request.body['assignment[due_at]']);
+
+        expect(due - unlock).toBe(2 * 60 * 60 * 1000);
+        expect(unlock > base.flaggedDate).toBe(true);
+    });
+
+    test('uses override fields for differentiated dates', () => {
+        const request = moveRequest(
+            { ...base, update: { ...base.update, overrideId: 55 } },
+            '99',
+            1
+        );
+
+        expect(request.url).toBe('/api/v1/courses/99/assignments/7/overrides/55');
+        expect(Object.keys(request.body).sort()).toEqual([
+            'assignment_override[due_at]',
+            'assignment_override[unlock_at]'
+        ]);
+    });
+
+    test('files only move unlock_at', () => {
+        const request = moveRequest(
+            { ...base, update: { endpoint: 'file', entityId: 30, overrideId: null, field: 'unlock_at' } },
+            '99',
+            1
+        );
+
+        expect(Object.keys(request.body)).toEqual(['file[unlock_at]']);
+    });
+});
+
+describe('csrfTokenFromCookie', () => {
+    test('extracts and URL-decodes the _csrf_token cookie', () => {
+        expect(csrfTokenFromCookie(
+            'a=1; _csrf_token=abc%2Bdef%3D%3D; b=2'
+        )).toBe('abc+def==');
+    });
+
+    test('returns null when the cookie is absent', () => {
+        expect(csrfTokenFromCookie('a=1; b=2')).toBeNull();
+        expect(csrfTokenFromCookie('')).toBeNull();
+    });
 });
 
 describe('api.js', () => {

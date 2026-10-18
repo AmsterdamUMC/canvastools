@@ -91,7 +91,8 @@
             title: 'Everyone',
             base: true,
             due_at: entity.due_at,
-            unlock_at: entity.unlock_at
+            unlock_at: entity.unlock_at,
+            lock_at: entity.lock_at
         }];
     }
 
@@ -240,6 +241,18 @@
                         flaggedDate: date,
 
                         dateRaw: rawDate,
+
+                        /*
+                         * All dates of this entry, so a move
+                         * can shift them together: Canvas
+                         * rejects a due date outside the
+                         * unlock/lock window.
+                         */
+                        entryDates: {
+                            due_at: entry.due_at || null,
+                            unlock_at: entry.unlock_at || null,
+                            lock_at: entry.lock_at || null
+                        },
 
                         update: {
                             endpoint: target.endpoint,

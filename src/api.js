@@ -211,6 +211,50 @@
     }
 
 
+    /*
+     * Build the request that shifts a flagged entry by whole
+     * weeks. Canvas validates the due date against the
+     * availability window ("Due at must be between available
+     * dates"), so moving one date alone fails once it crosses
+     * the others. All dates of the same entry (result.entryDates)
+     * are therefore shifted together in one request. Files only
+     * have unlock_at.
+     */
+    function moveRequest(result, courseId, weeks) {
+
+        const request = dateUpdateRequest(
+            result,
+            courseId,
+            addWeeks(result.flaggedDate, weeks).toISOString()
+        );
+
+        if (result.update.endpoint === 'file') {
+            return request;
+        }
+
+        const dates = result.entryDates || {};
+
+        for (const field of ['unlock_at', 'due_at', 'lock_at']) {
+
+            const date = parseCanvasDate(dates[field]);
+
+            if (!date || field === result.update.field) {
+                continue;
+            }
+
+            const extra = dateUpdateRequest(
+                { update: { ...result.update, field } },
+                courseId,
+                addWeeks(date, weeks).toISOString()
+            );
+
+            Object.assign(request.body, extra.body);
+        }
+
+        return request;
+    }
+
+
     function encodeBody(body) {
 
         const parts = [];
@@ -228,16 +272,34 @@
 
 
     /*
-     * Canvas rejects state-changing requests without the CSRF
-     * token embedded in the page. api.js runs in the page
-     * context, so the meta tag is readable. The vm-based tests
-     * have no document, hence the guard.
+     * Canvas rejects state-changing requests without a valid
+     * CSRF token with a generic 422 "unprocessable_content".
+     * Canvas does not render a csrf-token meta tag; its own
+     * frontend reads the (URL-encoded) _csrf_token cookie and
+     * sends it as X-CSRF-Token. The vm-based tests have no
+     * document, hence the guard.
      */
+
+    function csrfTokenFromCookie(cookieString) {
+
+        const match = (cookieString || '').match(
+            /(?:^|;\s*)_csrf_token=([^;]+)/
+        );
+
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+
 
     function csrfToken() {
 
         if (typeof document === 'undefined') {
             return null;
+        }
+
+        const fromCookie = csrfTokenFromCookie(document.cookie);
+
+        if (fromCookie) {
+            return fromCookie;
         }
 
         const meta = document.querySelector(
@@ -270,8 +332,18 @@
         });
 
         if (!response.ok) {
+
+            let detail = '';
+
+            try {
+                detail = (await response.text()).slice(0, 300);
+            } catch (ignored) {
+                // Body unreadable; report the status only.
+            }
+
             throw new Error(
-                `Canvas API error: ${response.status} ${response.statusText}`
+                `Canvas API error: ${response.status} ${response.statusText}` +
+                (detail ? ` - ${detail}` : '')
             );
         }
 

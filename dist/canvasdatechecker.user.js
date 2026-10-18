@@ -254,6 +254,50 @@
     }
 
 
+    /*
+     * Build the request that shifts a flagged entry by whole
+     * weeks. Canvas validates the due date against the
+     * availability window ("Due at must be between available
+     * dates"), so moving one date alone fails once it crosses
+     * the others. All dates of the same entry (result.entryDates)
+     * are therefore shifted together in one request. Files only
+     * have unlock_at.
+     */
+    function moveRequest(result, courseId, weeks) {
+
+        const request = dateUpdateRequest(
+            result,
+            courseId,
+            addWeeks(result.flaggedDate, weeks).toISOString()
+        );
+
+        if (result.update.endpoint === 'file') {
+            return request;
+        }
+
+        const dates = result.entryDates || {};
+
+        for (const field of ['unlock_at', 'due_at', 'lock_at']) {
+
+            const date = parseCanvasDate(dates[field]);
+
+            if (!date || field === result.update.field) {
+                continue;
+            }
+
+            const extra = dateUpdateRequest(
+                { update: { ...result.update, field } },
+                courseId,
+                addWeeks(date, weeks).toISOString()
+            );
+
+            Object.assign(request.body, extra.body);
+        }
+
+        return request;
+    }
+
+
     function encodeBody(body) {
 
         const parts = [];
@@ -271,16 +315,34 @@
 
 
     /*
-     * Canvas rejects state-changing requests without the CSRF
-     * token embedded in the page. api.js runs in the page
-     * context, so the meta tag is readable. The vm-based tests
-     * have no document, hence the guard.
+     * Canvas rejects state-changing requests without a valid
+     * CSRF token with a generic 422 "unprocessable_content".
+     * Canvas does not render a csrf-token meta tag; its own
+     * frontend reads the (URL-encoded) _csrf_token cookie and
+     * sends it as X-CSRF-Token. The vm-based tests have no
+     * document, hence the guard.
      */
+
+    function csrfTokenFromCookie(cookieString) {
+
+        const match = (cookieString || '').match(
+            /(?:^|;\s*)_csrf_token=([^;]+)/
+        );
+
+        return match ? decodeURIComponent(match[1]) : null;
+    }
+
 
     function csrfToken() {
 
         if (typeof document === 'undefined') {
             return null;
+        }
+
+        const fromCookie = csrfTokenFromCookie(document.cookie);
+
+        if (fromCookie) {
+            return fromCookie;
         }
 
         const meta = document.querySelector(
@@ -313,8 +375,18 @@
         });
 
         if (!response.ok) {
+
+            let detail = '';
+
+            try {
+                detail = (await response.text()).slice(0, 300);
+            } catch (ignored) {
+                // Body unreadable; report the status only.
+            }
+
             throw new Error(
-                `Canvas API error: ${response.status} ${response.statusText}`
+                `Canvas API error: ${response.status} ${response.statusText}` +
+                (detail ? ` - ${detail}` : '')
             );
         }
 
@@ -534,7 +606,8 @@
             title: 'Everyone',
             base: true,
             due_at: entity.due_at,
-            unlock_at: entity.unlock_at
+            unlock_at: entity.unlock_at,
+            lock_at: entity.lock_at
         }];
     }
 
@@ -683,6 +756,18 @@
                         flaggedDate: date,
 
                         dateRaw: rawDate,
+
+                        /*
+                         * All dates of this entry, so a move
+                         * can shift them together: Canvas
+                         * rejects a due date outside the
+                         * unlock/lock window.
+                         */
+                        entryDates: {
+                            due_at: entry.due_at || null,
+                            unlock_at: entry.unlock_at || null,
+                            lock_at: entry.lock_at || null
+                        },
 
                         update: {
                             endpoint: target.endpoint,
@@ -1871,12 +1956,12 @@
                 )
                 .addEventListener(
                     'click',
-                    () => applyMoves(proposals)
+                    () => applyMoves(proposals, weeks)
                 );
         }
 
 
-        async function applyMoves(proposals) {
+        async function applyMoves(proposals, weeks) {
 
             const courseId = getCourseId();
 
@@ -1901,27 +1986,46 @@
 
             const failures = [];
 
+            /*
+             * One request per Canvas item: each request
+             * already shifts all dates of that entry, so a
+             * second selected date of the same entry must not
+             * shift it again.
+             */
+            const requests = new Map();
+
             for (const proposal of proposals) {
 
-                const request = dateUpdateRequest(
+                const request = moveRequest(
                     proposal,
                     courseId,
-                    proposal.newDate.toISOString()
+                    weeks
                 );
+
+                if (!requests.has(request.url)) {
+                    requests.set(request.url, {
+                        request,
+                        proposals: []
+                    });
+                }
+
+                requests.get(request.url).proposals.push(proposal);
+            }
+
+            for (const { request, proposals: group } of requests.values()) {
 
                 try {
 
                     await sendDateUpdate(request);
 
-                    movedCount++;
+                    movedCount += group.length;
 
                 } catch (error) {
 
                     console.error(error);
 
                     failures.push(
-                        `${proposal.itemName} ` +
-                        `(${proposal.dateKind}): ` +
+                        `${group[0].itemName}: ` +
                         `${error.message}`
                     );
                 }
