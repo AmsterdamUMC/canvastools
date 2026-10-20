@@ -39,6 +39,36 @@
 
 
     // ------------------------------------------------------------
+    // MODULES VIEW AVAILABLE DATES
+    // ------------------------------------------------------------
+
+    async function applyModuleAvailableDates() {
+
+        const courseId = getCourseId();
+
+        if (!courseId) {
+            return;
+        }
+
+        try {
+
+            const [modules, assignments] = await Promise.all([
+                getModules(courseId),
+                getAssignments(courseId)
+            ]);
+
+            renderModuleAvailableDates(
+                moduleAvailableDates(modules, assignments)
+            );
+
+        } catch (error) {
+
+            console.error(error);
+        }
+    }
+
+
+    // ------------------------------------------------------------
     // START
     // ------------------------------------------------------------
 
@@ -50,6 +80,10 @@
         );
 
         applyEndedCourseBackground();
+
+        if (isModulesPage(window.location.pathname)) {
+            applyModuleAvailableDates();
+        }
     }
 
 

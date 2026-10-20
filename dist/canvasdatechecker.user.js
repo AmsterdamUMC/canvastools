@@ -186,6 +186,22 @@
     }
 
 
+    function modulesUrl(courseId) {
+
+        return (
+            `/api/v1/courses/${courseId}/modules` +
+            `?per_page=100` +
+            `&include[]=items`
+        );
+    }
+
+
+    async function getModules(courseId) {
+
+        return await fetchAllPages(modulesUrl(courseId));
+    }
+
+
     async function getAssignments(courseId) {
 
         return await fetchAllPages(assignmentsUrl(courseId));
@@ -941,6 +957,53 @@
     }
 
     // ------------------------------------------------------------
+    // MODULES VIEW: AVAILABLE DATES
+    // ------------------------------------------------------------
+
+    function isModulesPage(pathname) {
+
+        return /^\/courses\/\d+\/modules\/?$/.test(pathname || '');
+    }
+
+
+    /*
+     * Map module items to the availability date of the assignment
+     * they point to. Only published assignments with an unlock_at
+     * are returned: [{ itemId, unlockAt }].
+     */
+    function moduleAvailableDates(modules, assignments) {
+
+        const byId = new Map();
+
+        for (const assignment of assignments || []) {
+
+            if (assignment.published && parseCanvasDate(assignment.unlock_at)) {
+                byId.set(String(assignment.id), assignment.unlock_at);
+            }
+        }
+
+        const results = [];
+
+        for (const module of modules || []) {
+
+            for (const item of module.items || []) {
+
+                if (item.type !== 'Assignment') {
+                    continue;
+                }
+
+                const unlockAt = byId.get(String(item.content_id));
+
+                if (unlockAt) {
+                    results.push({ itemId: String(item.id), unlockAt });
+                }
+            }
+        }
+
+        return results;
+    }
+
+    // ------------------------------------------------------------
     // CSV EXPORT
     // ------------------------------------------------------------
 
@@ -1327,6 +1390,40 @@
         `;
 
         document.head.appendChild(style);
+    }
+
+
+    // ------------------------------------------------------------
+    // MODULES VIEW AVAILABLE DATES
+    // ------------------------------------------------------------
+
+    const MODULE_AVAILABLE_CLASS = 'canvas-audit-module-available';
+
+    function renderModuleAvailableDates(entries) {
+
+        for (const entry of entries) {
+
+            const row = document.getElementById(
+                `context_module_item_${entry.itemId}`
+            );
+
+            if (!row || row.querySelector(`.${MODULE_AVAILABLE_CLASS}`)) {
+                continue;
+            }
+
+            const target =
+                row.querySelector('.ig-details') ||
+                row.querySelector('.ig-info') ||
+                row;
+
+            const span = document.createElement('span');
+
+            span.className = `${MODULE_AVAILABLE_CLASS} ig-details__item`;
+            span.style.fontWeight = 'bold';
+            span.textContent = `Available from: ${formatDate(entry.unlockAt)}`;
+
+            target.appendChild(span);
+        }
     }
 
 
@@ -2316,6 +2413,36 @@
 
 
     // ------------------------------------------------------------
+    // MODULES VIEW AVAILABLE DATES
+    // ------------------------------------------------------------
+
+    async function applyModuleAvailableDates() {
+
+        const courseId = getCourseId();
+
+        if (!courseId) {
+            return;
+        }
+
+        try {
+
+            const [modules, assignments] = await Promise.all([
+                getModules(courseId),
+                getAssignments(courseId)
+            ]);
+
+            renderModuleAvailableDates(
+                moduleAvailableDates(modules, assignments)
+            );
+
+        } catch (error) {
+
+            console.error(error);
+        }
+    }
+
+
+    // ------------------------------------------------------------
     // START
     // ------------------------------------------------------------
 
@@ -2327,6 +2454,10 @@
         );
 
         applyEndedCourseBackground();
+
+        if (isModulesPage(window.location.pathname)) {
+            applyModuleAvailableDates();
+        }
     }
 
 

@@ -22,6 +22,7 @@ This project is a Tampermonkey userscript for Canvas LMS (hosted at canvas.uva.n
 - src/dates.js - Pure date utilities: parsing, cutoff interpretation, formatting, and HTML escaping.
 - src/audit.js - Core audit logic: date kinds, entity name/URL resolution, audience labels, quiz/assignment partitioning, auditEntities(), and auditCourse().
 - src/course.js - Pure course-status logic: courseHasEnded() decides whether a course's end_at has passed, and parseTermEndAt() derives an end date from Canvas term names such as "2026/27 Sem. 1".
+- src/modules.js - Pure Modules-view logic: isModulesPage() and moduleAvailableDates(), which maps module items to the unlock_at of published assignments. The UI appends an "Available from" label to those rows on /courses/:id/modules.
 - src/csv.js - CSV serialization (resultsToCsv) plus a thin DOM download wrapper.
 - src/ui.js - Modal HTML, table rendering, CSS injection, and the ended-course background highlight. Orchestration is delegated to auditCourse().
 - src/start.js - Bootstrap (initialise()) and IIFE close.

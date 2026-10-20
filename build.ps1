@@ -25,6 +25,7 @@ $modules = @(
     'dates.js'
     'audit.js'
     'course.js'
+    'modules.js'
     'csv.js'
     'ui.js'
     'start.js'

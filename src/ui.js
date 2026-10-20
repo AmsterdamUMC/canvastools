@@ -303,6 +303,40 @@
 
 
     // ------------------------------------------------------------
+    // MODULES VIEW AVAILABLE DATES
+    // ------------------------------------------------------------
+
+    const MODULE_AVAILABLE_CLASS = 'canvas-audit-module-available';
+
+    function renderModuleAvailableDates(entries) {
+
+        for (const entry of entries) {
+
+            const row = document.getElementById(
+                `context_module_item_${entry.itemId}`
+            );
+
+            if (!row || row.querySelector(`.${MODULE_AVAILABLE_CLASS}`)) {
+                continue;
+            }
+
+            const target =
+                row.querySelector('.ig-details') ||
+                row.querySelector('.ig-info') ||
+                row;
+
+            const span = document.createElement('span');
+
+            span.className = `${MODULE_AVAILABLE_CLASS} ig-details__item`;
+            span.style.fontWeight = 'bold';
+            span.textContent = `Available from: ${formatDate(entry.unlockAt)}`;
+
+            target.appendChild(span);
+        }
+    }
+
+
+    // ------------------------------------------------------------
     // CREATE MODAL
     // ------------------------------------------------------------
 

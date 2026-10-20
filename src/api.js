@@ -143,6 +143,22 @@
     }
 
 
+    function modulesUrl(courseId) {
+
+        return (
+            `/api/v1/courses/${courseId}/modules` +
+            `?per_page=100` +
+            `&include[]=items`
+        );
+    }
+
+
+    async function getModules(courseId) {
+
+        return await fetchAllPages(modulesUrl(courseId));
+    }
+
+
     async function getAssignments(courseId) {
 
         return await fetchAllPages(assignmentsUrl(courseId));
