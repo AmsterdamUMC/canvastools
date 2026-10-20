@@ -86,7 +86,7 @@ describe('moveRequest', () => {
             1
         );
 
-        expect(Object.keys(request.body)).toEqual(['file[unlock_at]']);
+        expect(Object.keys(request.body)).toEqual(['unlock_at']);
     });
 });
 
@@ -279,8 +279,8 @@ describe('api.js', () => {
             };
 
             expect(dateUpdateRequest(result, '99', '2026-10-12T08:00:00.000Z')).toEqual({
-                url: '/api/v1/courses/99/files/30',
-                body: { 'file[unlock_at]': '2026-10-12T08:00:00.000Z' }
+                url: '/api/v1/files/30',
+                body: { unlock_at: '2026-10-12T08:00:00.000Z' }
             });
         });
     });

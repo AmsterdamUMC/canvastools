@@ -180,8 +180,10 @@
         if (update.endpoint === 'file') {
 
             return {
-                url: `/api/v1/courses/${courseId}/files/${update.entityId}`,
-                body: { 'file[unlock_at]': isoDate }
+                // Canvas only exposes PUT /api/v1/files/:id (no
+                // course-scoped variant) and expects top-level params.
+                url: `/api/v1/files/${update.entityId}`,
+                body: { unlock_at: isoDate }
             };
         }
 
